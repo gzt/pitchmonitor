@@ -84,57 +84,61 @@ def get_scale_note_names(key, scale_type):
 # ── Pitch Detection ──────────────────────────────────────────────────────────
 
 SAMPLE_RATE = 44100
-CHUNK = 2048          # ~46ms per chunk
+CHUNK = 4096          # ~93ms per chunk — better low-freq resolution
 HISTORY_SECONDS = 4
 HISTORY_LEN = int(HISTORY_SECONDS * SAMPLE_RATE / CHUNK)
 
 MIN_FREQ = 60.0       # Hz — below this we ignore
 MAX_FREQ = 1200.0     # Hz
 
-def detect_pitch_yin(audio, sr, threshold=0.15):
-    """YIN algorithm for robust pitch detection."""
+def detect_pitch(audio, sr):
+    """
+    Fast pitch detection via FFT autocorrelation + parabolic interpolation.
+    Returns (frequency_hz, confidence 0..1).
+    """
     N = len(audio)
-    tau_min = int(sr / MAX_FREQ)
-    tau_max = int(sr / MIN_FREQ)
-    tau_max = min(tau_max, N // 2)
 
-    # Step 1: difference function
-    diff = np.zeros(tau_max)
-    for tau in range(1, tau_max):
-        diff[tau] = np.sum((audio[:N - tau] - audio[tau:N]) ** 2)
+    # FFT-based autocorrelation (O(N log N) vs YIN's O(N^2))
+    windowed = audio * np.hanning(N)
+    f = np.fft.rfft(windowed, n=N * 2)
+    acf = np.fft.irfft(f * np.conj(f))[:N]
+    acf /= (acf[0] + 1e-10)   # normalize
 
-    # Step 2: cumulative mean normalized difference
-    cmnd = np.zeros(tau_max)
-    cmnd[0] = 1
-    running_sum = 0
-    for tau in range(1, tau_max):
-        running_sum += diff[tau]
-        cmnd[tau] = diff[tau] * tau / running_sum if running_sum > 0 else 1
+    # Search range in samples
+    lag_min = int(sr / MAX_FREQ)
+    lag_max = int(sr / MIN_FREQ)
+    lag_max = min(lag_max, N - 1)
 
-    # Step 3: absolute threshold
-    tau_est = tau_min
-    found = False
-    for tau in range(tau_min, tau_max - 1):
-        if cmnd[tau] < threshold:
-            # Step 4: local minimum
-            while tau + 1 < tau_max and cmnd[tau + 1] < cmnd[tau]:
-                tau += 1
-            tau_est = tau
-            found = True
-            break
-
-    if not found:
+    if lag_min >= lag_max:
         return 0.0, 0.0
 
-    # Step 5: parabolic interpolation
-    if 0 < tau_est < tau_max - 1:
-        s0, s1, s2 = cmnd[tau_est - 1], cmnd[tau_est], cmnd[tau_est + 1]
-        tau_interp = tau_est + (s2 - s0) / (2 * (2 * s1 - s2 - s0) + 1e-10)
-    else:
-        tau_interp = tau_est
+    search = acf[lag_min:lag_max]
 
-    freq = sr / tau_interp if tau_interp > 0 else 0
-    confidence = 1.0 - cmnd[tau_est]
+    # Find the highest peak in range
+    peak_idx = int(np.argmax(search))
+    peak_val = search[peak_idx]
+    abs_idx = peak_idx + lag_min
+
+    # Confidence: how strong is the peak vs the zero-lag (normalized ACF)
+    # A clean sinusoid hits ~1.0; noise stays near 0
+    confidence = float(np.clip(peak_val, 0, 1))
+
+    if confidence < 0.2:
+        return 0.0, confidence
+
+    # Parabolic interpolation for sub-sample accuracy
+    if 0 < abs_idx < N - 1:
+        y0, y1, y2 = acf[abs_idx - 1], acf[abs_idx], acf[abs_idx + 1]
+        denom = 2 * (2 * y1 - y0 - y2)
+        if abs(denom) > 1e-10:
+            offset = (y2 - y0) / denom
+        else:
+            offset = 0.0
+        lag_interp = abs_idx + offset
+    else:
+        lag_interp = abs_idx
+
+    freq = sr / lag_interp if lag_interp > 0 else 0.0
     return freq, confidence
 
 
@@ -160,7 +164,7 @@ class VocalPitchMonitor:
         self.stream = None
         self.devices = self._get_input_devices()
         self.selected_device = tk.IntVar(value=self._default_device())
-        self.conf_threshold = tk.DoubleVar(value=0.7)
+        self.conf_threshold = tk.DoubleVar(value=0.35)
 
         self._build_ui()
         self._start_audio()
@@ -428,7 +432,7 @@ class VocalPitchMonitor:
             fill=DIM, outline="")
         # Center mark
         c.create_rectangle(mid - 1, H//2 - 8, mid + 1, H//2 + 8,
-            fill="#ffffff40", outline="")
+            fill="#ffffff", outline="")
 
         # Marker position: ±50 cents maps to ±95px from center
         clamped = max(-50, min(50, cents))
@@ -445,7 +449,7 @@ class VocalPitchMonitor:
 
         # Marker
         c.create_oval(px - 7, H//2 - 7, px + 7, H//2 + 7,
-            fill=color, outline="#ffffff20")
+            fill=color, outline="#ffffff")
 
         # Labels
         c.create_text(10, H - 6, text="-50¢", fill=MUTED,
@@ -511,14 +515,12 @@ class VocalPitchMonitor:
             audio = self.audio_queue.get_nowait()
             chunks_processed += 1
 
-            # Hann window
-            windowed = audio * np.hanning(len(audio))
-            rms = np.sqrt(np.mean(windowed ** 2))
+            rms = np.sqrt(np.mean(audio ** 2))
 
             if rms < 0.003:  # silence threshold
                 freq, conf = 0.0, 0.0
             else:
-                freq, conf = detect_pitch_yin(windowed, SAMPLE_RATE)
+                freq, conf = detect_pitch(audio, SAMPLE_RATE)
                 if not (MIN_FREQ <= freq <= MAX_FREQ):
                     freq, conf = 0.0, 0.0
 
