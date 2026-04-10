@@ -51,3 +51,12 @@ in pretty much one shot after being told what I wanted and that I was on fedora 
 something for personal use and therefore didn't have to worry about portability. It isn't 
 production level as you would need to fiddle with it to get it to work on your own system,
 but that's one well-formed prompt away for somebody who can use Python.
+
+Update (11:00 a.m.): after being allowed by Claude to run through this again, it took 
+a couple rounds, we debugged the problems. There were two issues:
+
+1. It couldn't compile because of a name mismatch between functions in the latest version
+of the audio tools vs what is in Fedora (0.1 behind). This means this program will be obsolete
+fairly soon, actually, as Fedora is going to update it in the near future.
+2. The first try got the normalization constant for FFTW wrong, so the "confidence" was 
+never correct. I'll have to look back at the math.
