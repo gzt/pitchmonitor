@@ -45,3 +45,9 @@ structures when it should really be second nature for these simple things.
 3. I could spend some time remembering C and how to work with FFTW objects, but 
 it really is a pain to deal with pointers, structs, and all that jazz. And the 
 obvious problems dealing with audio.
+
+This is impressive: it made a functioning application in Python that did what I want 
+in pretty much one shot after being told what I wanted and that I was on fedora 43 and was making
+something for personal use and therefore didn't have to worry about portability. It isn't 
+production level as you would need to fiddle with it to get it to work on your own system,
+but that's one well-formed prompt away for somebody who can use Python.
